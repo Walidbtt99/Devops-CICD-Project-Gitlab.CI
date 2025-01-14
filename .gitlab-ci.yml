@@ -1,0 +1,230 @@
+services:
+  - mysql:latest
+
+variables:
+  SONARQUBE_SERVER_URL:  https://3f85-197-17-22-16.ngrok-free.app 
+  SONARQUBE_TOKEN: sqa_0dc075f934022fd2f6144da036d30fe261149acf
+  DOCKER_IMAGE: bettaibiwalid/gestion-station-ski:latest
+  username : $DOCKER_USERNAME
+  pass : $DOCKER_PASSWORD
+  MYSQL_CONTAINER : mysql-db
+  APP_CONTAINER : spring-boot-app
+  
+
+stages:
+  - Compile
+  - Junit/Mockito tests
+  - Sonarqube Analysis
+  - Build the application
+  - Build Docker Image
+  - Trivy Scan
+  - Push Docker Image
+  - Deploy With Docker Compose
+  - Terraform Plan
+  - approval
+  - Terraform apply
+
+Compile:
+  stage: Compile
+  image: maven:3.6.3-jdk-8
+  tags:
+    - gitlab-runner1  # Add this line to specify the runner tag
+  cache:
+    paths:
+      - ~/.m2/repository/  
+      
+  script:
+    - echo "Compiling the application with Maven..."
+    - mvn clean compile
+    - echo "Listing target directory..."
+    - ls -l target/
+
+  artifacts:
+    paths:
+      - target/
+    expire_in: 1 week
+
+Junit/Mockito tests:
+  stage: Junit/Mockito tests
+  image: maven:3.6.3-jdk-8
+  tags:
+    - gitlab-runner1  # Add this line to specify the runner tag
+  services:
+    - name: mysql:latest
+      alias: mysql
+  variables:
+    MYSQL_ROOT_PASSWORD: walid
+    MYSQL_DATABASE: walid-db
+    MYSQL_USER: walid
+    MYSQL_PASSWORD: walid
+  cache:
+    paths:
+      - ~/.m2/repository/
+  script:
+    - apt-get update && apt-get install -y netcat
+    - echo "Waiting for MySQL to be ready..."
+    - until nc -z -v -w30 mysql 3306; do echo "Waiting for database connection..."; sleep 5; done
+    - mvn test
+  dependencies:
+    - Compile
+  artifacts:
+    paths:
+      - target/surefire-reports
+    expire_in: 1 week
+
+Sonarqube Analysis:
+  stage: Sonarqube Analysis
+  image: sonarsource/sonar-scanner-cli:latest
+  tags:
+    - gitlab-runner1  # Add this line to specify the runner tag
+  services:
+    - name: mysql:latest
+      alias: mysql
+  variables:
+    MYSQL_ROOT_PASSWORD: walid
+    MYSQL_DATABASE: walid-db
+    MYSQL_USER: walid
+    MYSQL_PASSWORD: walid  
+  cache:
+    paths:
+      - ~/.sonar/cache/
+  script:
+    - echo "SONARQUBE_SERVER_URL=$SONARQUBE_SERVER_URL"
+    - echo "SONARQUBE_TOKEN=$SONARQUBE_TOKEN"
+    - echo "Analyzing code with SonarQube..."
+    - |
+      sonar-scanner \
+        -D"sonar.projectKey=gitlab-project" \
+        -D"sonar.sources=src" \
+        -D"sonar.host.url=$SONARQUBE_SERVER_URL" \
+        -D"sonar.login=$SONARQUBE_TOKEN" \
+        -D"sonar.java.binaries=target/classes" \
+        -X
+  dependencies:
+    -  Compile # Use compiled artifacts from the build stage
+
+    
+Build the application:
+  stage: Build the application
+  image: maven:3.6.3-jdk-8
+  tags:
+    - gitlab-runner1  # Add this line to specify the runner tag
+  services:
+    - name: mysql:latest
+      alias: mysql
+  variables:
+    MYSQL_ROOT_PASSWORD: walid
+    MYSQL_DATABASE: walid-db
+    MYSQL_USER: walid
+    MYSQL_PASSWORD: walid  
+  cache:
+    paths:
+      - ~/.m2/repository/
+  script:
+    - mvn install package -DskipTests
+  dependencies:
+    - Compile
+  artifacts:
+    paths:
+      - target/
+    expire_in: 1 week
+
+
+Build Docker Image:
+  stage: Build Docker Image
+  tags:
+    - gitlab-runner1  # Add this line to specify the runner tag.
+  script: 
+    - pwd
+    - ls -al target/
+    - docker build -t $DOCKER_IMAGE .
+
+Trivy Scan:
+  stage: Trivy Scan
+  tags:
+    - gitlab-runner1  # Add this line to specify the runner tag
+  services:
+    - name: mysql:latest
+      alias: mysql
+  variables:
+    MYSQL_ROOT_PASSWORD: walid
+    MYSQL_DATABASE: walid-db
+    MYSQL_USER: walid
+    MYSQL_PASSWORD: walid  
+  script:
+    - trivy image bettaibiwalid/gestion-station-ski:latest
+  #allow_failure: false  # Fail the pipeline if vulnerabilities are found
+  dependencies:
+    - Build Docker Image
+
+
+Push Docker Image:
+  stage: Push Docker Image
+  tags:
+    - gitlab-runner1  # Add this line to specify the runner tag
+  script:
+    - docker push $DOCKER_IMAGE
+
+deploy-with-docker-compose:
+  stage: Deploy With Docker Compose
+  environment: production
+  tags:
+    - gitlab-runner1  #self hosted runner on my VM
+  script:
+    - echo 'Deploying Application with Docker Compose...'
+    - echo "Waiting for manual approval..."
+    # Clean up old containers if they are running
+    - |
+      if [ "$(docker ps -q -f name=${APP_CONTAINER})" ]; then
+          docker stop ${APP_CONTAINER}
+          docker rm ${APP_CONTAINER}
+      fi
+
+      if [ "$(docker ps -q -f name=${MYSQL_CONTAINER})" ]; then
+          docker stop ${MYSQL_CONTAINER}
+          docker rm ${MYSQL_CONTAINER}
+      fi
+    # Deploy new containers
+    - docker-compose up -d
+  when: manual #
+
+
+#Terraform plan:
+#  stage: Terraform Plan
+#  environment: production
+#  tags:
+#    - gitlab-runner1  #self hosted runner on my VM
+#  script:
+#    - cd terraform
+#    - terraform init
+#    - terraform plan -out=tfplan
+#  artifacts:
+#    paths:
+#      - tfplan  # Ensure the plan output is saved as an artifact
+#  only:
+#    - main  # or whichever branch you want to trigger the plan for
+
+#approve:
+#  stage: approval
+#  environment: production
+#  tags:
+#    - gitlab-runner1  #self hosted runner on my VM
+#  script:
+#    - echo "Waiting for manual approval..."
+#  when: manual
+#  only:
+#    - main
+#  allow_failure: false  # This makes the pipeline stop until approved
+
+#Terraform apply:
+#  stage: Terraform apply
+#  environment: production
+#  tags:
+#    - gitlab-runner1  #self hosted runner on my VM
+#  script:
+#    - terraform apply tfplan
+#  only:
+#    - main
+#  when: on_success
+# needs:
+#    - job: Terraform plan  # The correct job name here is "Terraform plan" (not "terraform plan").

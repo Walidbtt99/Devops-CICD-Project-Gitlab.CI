@@ -1,0 +1,33 @@
+services:
+  database:
+    image: mysql
+    container_name: mysql-db
+    environment:
+      MYSQL_ROOT_PASSWORD: walid
+      MYSQL_DATABASE: walid-db
+      MYSQL_USER: walid
+      MYSQL_PASSWORD: walid
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 30s
+      retries: 5
+
+  app:
+    image: bettaibiwalid/gestion-station-ski:1.0.0
+    container_name: spring-boot-app
+    depends_on:
+      - database
+    environment:
+      # Using DB_URL, DB_USERNAME, and DB_PASSWORD to match Kubernetes setup
+      DB_URL: jdbc:mysql://mysql-db:3306/walid-db
+      DB_USERNAME: walid
+      DB_PASSWORD: walid
+    ports:
+      - "8085:8082"
+
+volumes:
+  mysql_data:
